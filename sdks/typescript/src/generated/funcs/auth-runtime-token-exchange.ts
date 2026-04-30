@@ -4,7 +4,7 @@
 
 import * as z from "zod/v4-mini";
 import { AgentControlSDKCore } from "../core.js";
-import { encodeFormQuery } from "../lib/encodings.js";
+import { encodeJSON } from "../lib/encodings.js";
 import * as M from "../lib/matchers.js";
 import { compactMap } from "../lib/primitives.js";
 import { safeParse } from "../lib/schemas.js";
@@ -23,30 +23,32 @@ import * as errors from "../models/errors/index.js";
 import { ResponseValidationError } from "../models/errors/response-validation-error.js";
 import { SDKValidationError } from "../models/errors/sdk-validation-error.js";
 import * as models from "../models/index.js";
-import * as operations from "../models/operations/index.js";
 import { APICall, APIPromise } from "../types/async.js";
 import { Result } from "../types/fp.js";
 
 /**
- * List control bindings
+ * Exchange a credential for a runtime token bound to a target
  *
  * @remarks
- * Return bindings in the request namespace with optional filters and
- * cursor-based pagination. Bindings are ordered by ID descending
- * (newest first). The cursor is opaque to clients: pass back the
- * ``next_cursor`` value verbatim to fetch the following page. The
- * storage namespace is resolved by ``get_namespace_key`` so this
- * listing stays in lockstep with the rest of the server's reads.
+ * Mint a short-lived runtime token for the requested target.
+ *
+ * The caller's credential is authenticated and authorized by the
+ * installed default authorizer; the resulting :class:`Principal`
+ * supplies the actor identity and (when the upstream surfaces it)
+ * the grant scopes and expiry. This endpoint then mints a local HS256
+ * token whose lifetime cannot outlive the upstream grant.
+ *
+ * Runtime auth must be enabled via
+ * ``AGENT_CONTROL_RUNTIME_TOKEN_SECRET``; otherwise the endpoint
+ * returns 503.
  */
-export function controlBindingsList(
+export function authRuntimeTokenExchange(
   client: AgentControlSDKCore,
-  request?:
-    | operations.ListControlBindingsApiV1ControlBindingsGetRequest
-    | undefined,
+  request: models.RuntimeTokenExchangeRequest,
   options?: RequestOptions,
 ): APIPromise<
   Result<
-    models.ListControlBindingsResponse,
+    models.RuntimeTokenExchangeResponse,
     | errors.HTTPValidationError
     | AgentControlSDKError
     | ResponseValidationError
@@ -67,14 +69,12 @@ export function controlBindingsList(
 
 async function $do(
   client: AgentControlSDKCore,
-  request?:
-    | operations.ListControlBindingsApiV1ControlBindingsGetRequest
-    | undefined,
+  request: models.RuntimeTokenExchangeRequest,
   options?: RequestOptions,
 ): Promise<
   [
     Result<
-      models.ListControlBindingsResponse,
+      models.RuntimeTokenExchangeResponse,
       | errors.HTTPValidationError
       | AgentControlSDKError
       | ResponseValidationError
@@ -91,32 +91,19 @@ async function $do(
   const parsed = safeParse(
     request,
     (value) =>
-      z.parse(
-        z.optional(
-          operations
-            .ListControlBindingsApiV1ControlBindingsGetRequest$outboundSchema,
-        ),
-        value,
-      ),
+      z.parse(models.RuntimeTokenExchangeRequest$outboundSchema, value),
     "Input validation failed",
   );
   if (!parsed.ok) {
     return [parsed, { status: "invalid" }];
   }
   const payload = parsed.value;
-  const body = null;
+  const body = encodeJSON("body", payload, { explode: true });
 
-  const path = pathToFunc("/api/v1/control-bindings")();
-
-  const query = encodeFormQuery({
-    "control_id": payload?.control_id,
-    "cursor": payload?.cursor,
-    "limit": payload?.limit,
-    "target_id": payload?.target_id,
-    "target_type": payload?.target_type,
-  });
+  const path = pathToFunc("/api/v1/auth/runtime-token-exchange")();
 
   const headers = new Headers(compactMap({
+    "Content-Type": "application/json",
     Accept: "application/json",
   }));
 
@@ -127,7 +114,8 @@ async function $do(
   const context = {
     options: client._options,
     baseURL: options?.serverURL ?? client._baseURL ?? "",
-    operationID: "list_control_bindings_api_v1_control_bindings_get",
+    operationID:
+      "runtime_token_exchange_api_v1_auth_runtime_token_exchange_post",
     oAuth2Scopes: null,
 
     resolvedSecurity: requestSecurity,
@@ -141,11 +129,10 @@ async function $do(
 
   const requestRes = client._createRequest(context, {
     security: requestSecurity,
-    method: "GET",
+    method: "POST",
     baseURL: options?.serverURL,
     path: path,
     headers: headers,
-    query: query,
     body: body,
     userAgent: client._options.userAgent,
     timeoutMs: options?.timeoutMs || client._options.timeoutMs || -1,
@@ -171,7 +158,7 @@ async function $do(
   };
 
   const [result] = await M.match<
-    models.ListControlBindingsResponse,
+    models.RuntimeTokenExchangeResponse,
     | errors.HTTPValidationError
     | AgentControlSDKError
     | ResponseValidationError
@@ -182,7 +169,7 @@ async function $do(
     | UnexpectedClientError
     | SDKValidationError
   >(
-    M.json(200, models.ListControlBindingsResponse$inboundSchema),
+    M.json(200, models.RuntimeTokenExchangeResponse$inboundSchema),
     M.jsonErr(422, errors.HTTPValidationError$inboundSchema),
     M.fail("4XX"),
     M.fail("5XX"),

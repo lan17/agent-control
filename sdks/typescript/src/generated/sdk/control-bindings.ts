@@ -19,10 +19,12 @@ export class ControlBindings extends ClientSDK {
    * List control bindings
    *
    * @remarks
-   * Return bindings in the current namespace with optional filters and
-   * cursor-based pagination. Bindings are ordered by ID descending (newest
-   * first). The cursor is opaque to clients: pass back the
-   * ``next_cursor`` value verbatim to fetch the following page.
+   * Return bindings in the request namespace with optional filters and
+   * cursor-based pagination. Bindings are ordered by ID descending
+   * (newest first). The cursor is opaque to clients: pass back the
+   * ``next_cursor`` value verbatim to fetch the following page. The
+   * storage namespace is resolved by ``get_namespace_key`` so this
+   * listing stays in lockstep with the rest of the server's reads.
    */
   async list(
     request?:
@@ -43,9 +45,12 @@ export class ControlBindings extends ClientSDK {
    * @remarks
    * Attach a control to an opaque external target.
    *
-   * Each binding row is an attachment scoped to the request's namespace; the
-   * ``enabled`` flag is a soft toggle. Per-agent overrides and exemptions are
-   * intentionally out of scope; see ``ControlBinding`` for the forward path.
+   * Each binding row is scoped to the request namespace as resolved by
+   * ``get_namespace_key``. The auth chain still runs via
+   * ``require_operation`` for authentication and authorization, but the
+   * storage namespace is taken from the same resolver the rest of the
+   * server uses so binding writes and runtime reads stay in lockstep
+   * until auth-derived namespace resolution lands across every endpoint.
    */
   async create(
     request: models.CreateControlBindingRequest,
@@ -96,7 +101,15 @@ export class ControlBindings extends ClientSDK {
   }
 
   /**
-   * Delete a control binding
+   * Delete a control binding (namespace-wide)
+   *
+   * @remarks
+   * Delete a control binding by surrogate ID.
+   *
+   * See the GET-by-id docstring for the authorization scope: this route
+   * is namespace-wide because the target identifiers are not available
+   * before the binding is loaded. Use ``POST /by-key:delete`` for
+   * target-scoped detach that forwards the target to the authorizer.
    */
   async delete(
     request:
@@ -111,7 +124,18 @@ export class ControlBindings extends ClientSDK {
   }
 
   /**
-   * Get a control binding
+   * Get a control binding (namespace-wide)
+   *
+   * @remarks
+   * Read a single control binding by surrogate ID.
+   *
+   * Authorization is namespace-wide: the binding's target identifiers
+   * are not forwarded to the upstream because they are only discoverable
+   * after the row is loaded, and ``require_operation`` is single-pass.
+   * Callers whose authorization model requires per-target permissions
+   * should use the natural-key endpoints (``PUT /by-key``,
+   * ``POST /by-key:delete``) and the target-filtered list endpoint, all
+   * of which forward ``(target_type, target_id)`` to the authorizer.
    */
   async get(
     request:
@@ -126,10 +150,15 @@ export class ControlBindings extends ClientSDK {
   }
 
   /**
-   * Update a control binding
+   * Update a control binding (namespace-wide)
    *
    * @remarks
    * Update the ``enabled`` flag on a control binding.
+   *
+   * See the GET-by-id docstring for the authorization scope: this route
+   * is namespace-wide because the target identifiers are not available
+   * before the binding is loaded. Use ``PUT /by-key`` for target-scoped
+   * upserts that forward the target to the authorizer.
    */
   async update(
     request:
