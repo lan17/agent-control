@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v7.10.0 (2026-05-27)
+
+### Bug Fixes
+
+- **sdk-ts**: Normalize generated client
+  ([#231](https://github.com/agentcontrol/agent-control/pull/231),
+  [`1c097d2`](https://github.com/agentcontrol/agent-control/commit/1c097d224f3dad4eda1e6fe3e8bed828d8e4f7e8))
+
+- **server**: Scope auth upstream CA to HTTP provider
+  ([#232](https://github.com/agentcontrol/agent-control/pull/232),
+  [`7a0ce21`](https://github.com/agentcontrol/agent-control/commit/7a0ce21249e65f2d4c8064eeee828147db7451c4))
+
+### Features
+
+- **evaluators**: Add new lluna client
+  ([#213](https://github.com/agentcontrol/agent-control/pull/213),
+  [`f65beb9`](https://github.com/agentcontrol/agent-control/commit/f65beb9d14dca8248c35a620d47af3298f1fe5e7))
+
+
 ## v7.9.0 (2026-05-25)
 
 ### Features
