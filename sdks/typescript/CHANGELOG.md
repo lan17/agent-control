@@ -1,3 +1,26 @@
+## [2.6.0](https://github.com/agentcontrol/agent-control/compare/ts-sdk-v2.5.0...ts-sdk-v2.6.0) (2026-05-28)
+
+### Features
+
+* **evaluators:** add new lluna client ([#213](https://github.com/agentcontrol/agent-control/issues/213)) ([f65beb9](https://github.com/agentcontrol/agent-control/commit/f65beb9d14dca8248c35a620d47af3298f1fe5e7))
+* **sdk:** add otel support ([#177](https://github.com/agentcontrol/agent-control/issues/177)) ([9530368](https://github.com/agentcontrol/agent-control/commit/9530368ff7d609106db600715724ba9ee1dbcaff))
+* **sdk:** add runtime token auth ([#215](https://github.com/agentcontrol/agent-control/issues/215)) ([6cc0f38](https://github.com/agentcontrol/agent-control/commit/6cc0f38b89e3870f44aa46e508e29431f8713e0d))
+* **server:** add control clone-and-bind endpoint ([#229](https://github.com/agentcontrol/agent-control/issues/229)) ([1728bf9](https://github.com/agentcontrol/agent-control/commit/1728bf9a89d76cdb19732c3b87ce2c9a4382df4e))
+* **server:** add runtime auth and namespace scoping ([#214](https://github.com/agentcontrol/agent-control/issues/214)) ([56e44fe](https://github.com/agentcontrol/agent-control/commit/56e44fe4cfd2e2952ced5e8428c271082c34a09e))
+* **server:** allow host-owned logging setup ([#227](https://github.com/agentcontrol/agent-control/issues/227)) ([c0fd159](https://github.com/agentcontrol/agent-control/commit/c0fd15903b0219973c910a1d301b60ed477ffcac))
+* **server:** bundle migrations in wheel and add agent-control-migrate ([#209](https://github.com/agentcontrol/agent-control/issues/209)) ([8c5c35e](https://github.com/agentcontrol/agent-control/commit/8c5c35ecbdc6b8d0fa98c8b7d3596a54ece022ad))
+* **server:** migrate controls routes to auth framework ([#212](https://github.com/agentcontrol/agent-control/issues/212)) ([764bd4b](https://github.com/agentcontrol/agent-control/commit/764bd4bc765c87b4c3027ba99531cdbccade39fb))
+
+### Bug Fixes
+
+* **examples:** declare local SDK workspace deps ([#222](https://github.com/agentcontrol/agent-control/issues/222)) ([d22aa1d](https://github.com/agentcontrol/agent-control/commit/d22aa1d6e25330455cbdb09b150bf51b9ff59158))
+* **sdk:**  Get trace context from provider ([#211](https://github.com/agentcontrol/agent-control/issues/211)) ([1efe30f](https://github.com/agentcontrol/agent-control/commit/1efe30f8a62800575c87b3c8459f9a93e46532a2))
+* **sdk-ts:** normalize generated client ([#231](https://github.com/agentcontrol/agent-control/issues/231)) ([1c097d2](https://github.com/agentcontrol/agent-control/commit/1c097d224f3dad4eda1e6fe3e8bed828d8e4f7e8))
+* **server:** make observability migration retry-safe ([#226](https://github.com/agentcontrol/agent-control/issues/226)) ([b9dd00d](https://github.com/agentcontrol/agent-control/commit/b9dd00d5e5a5c4223c5b19fcfff69b3d9d084b80))
+* **server:** prevent migration lock transactions ([#224](https://github.com/agentcontrol/agent-control/issues/224)) ([e65a2f4](https://github.com/agentcontrol/agent-control/commit/e65a2f46b91ca3ed05e2f233488823860ae037db))
+* **server:** scope auth upstream CA to HTTP provider ([#232](https://github.com/agentcontrol/agent-control/issues/232)) ([7a0ce21](https://github.com/agentcontrol/agent-control/commit/7a0ce21249e65f2d4c8064eeee828147db7451c4))
+* **ui:** fix editing of controls in the UI ([#218](https://github.com/agentcontrol/agent-control/issues/218)) ([981e33d](https://github.com/agentcontrol/agent-control/commit/981e33d40f2ffc31dc9454b433a5b9aeae1ec4a9)), closes [#Risk](https://github.com/agentcontrol/agent-control/issues/Risk)
+
 ## [2.5.0](https://github.com/agentcontrol/agent-control/compare/ts-sdk-v2.4.0...ts-sdk-v2.5.0) (2026-05-02)
 
 ### Features
