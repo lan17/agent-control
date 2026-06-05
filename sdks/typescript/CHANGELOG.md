@@ -1,3 +1,14 @@
+## [3.0.0](https://github.com/agentcontrol/agent-control/compare/ts-sdk-v2.6.0...ts-sdk-v3.0.0) (2026-06-05)
+
+### ⚠ BREAKING CHANGES
+
+* **evaluators:** remove Luna2 evaluator (#234)
+
+### Bug Fixes
+
+* **evaluators:** remove Luna2 evaluator ([#234](https://github.com/agentcontrol/agent-control/issues/234)) ([ccc4fc6](https://github.com/agentcontrol/agent-control/commit/ccc4fc6d4dc3228169d9db0178d14596349739f1))
+* **server:** harden auth upstream connection handling ([#235](https://github.com/agentcontrol/agent-control/issues/235)) ([16d0115](https://github.com/agentcontrol/agent-control/commit/16d0115a53289d34b92952210abe7b704ac9b10b))
+
 ## [2.6.0](https://github.com/agentcontrol/agent-control/compare/ts-sdk-v2.5.0...ts-sdk-v2.6.0) (2026-05-28)
 
 ### Features
