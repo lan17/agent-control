@@ -21,7 +21,6 @@ from agent_control import ControlViolationError, control
 
 AGENT_NAME = "galileo-luna-agent"
 SERVER_URL = os.getenv("AGENT_CONTROL_URL", "http://localhost:8000")
-LUNA_AUTH_MODE = os.getenv("GALILEO_LUNA_AUTH_MODE")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -92,36 +91,28 @@ def init_agent() -> None:
 async def run_demo() -> None:
     """Run scripted scenarios."""
     api_key = os.getenv("GALILEO_API_KEY")
-    api_secret = os.getenv("GALILEO_API_SECRET_KEY") or os.getenv("GALILEO_API_SECRET")
+    api_secret = os.getenv("GALILEO_API_SECRET_KEY")
     if not api_key and not api_secret:
         print(
             "Galileo credentials are required for the galileo.luna evaluator. "
-            "Set GALILEO_API_KEY for public mode or GALILEO_API_SECRET_KEY for "
-            "internal mode."
+            "Set GALILEO_API_KEY for public mode. Deployments using internal "
+            "mode should inject GALILEO_API_SECRET_KEY."
         )
         return
-    if api_key and api_secret and LUNA_AUTH_MODE not in {"public", "internal"}:
+    if api_key and api_secret:
         print(
-            "Both GALILEO_API_KEY and GALILEO_API_SECRET_KEY/GALILEO_API_SECRET are set. "
-            "Set GALILEO_LUNA_AUTH_MODE to 'public' or 'internal'."
+            "Both GALILEO_API_KEY and GALILEO_API_SECRET_KEY are set. "
+            "Unset one so the auth mode can be inferred."
         )
         return
-    if LUNA_AUTH_MODE == "public" and not api_key:
-        print("GALILEO_API_KEY is required when GALILEO_LUNA_AUTH_MODE=public.")
-        return
-    if LUNA_AUTH_MODE == "internal" and not api_secret:
-        print(
-            "GALILEO_API_SECRET_KEY or GALILEO_API_SECRET is required when "
-            "GALILEO_LUNA_AUTH_MODE=internal."
-        )
-        return
+    auth_mode = "public" if api_key else "internal"
 
     print("=" * 72)
     print("Direct Galileo Luna Evaluator Demo")
     print("=" * 72)
     print(f"Server: {SERVER_URL}")
     print(f"Agent:  {AGENT_NAME}")
-    print(f"Auth:   GALILEO_LUNA_AUTH_MODE={LUNA_AUTH_MODE or '(auto if one credential)'}")
+    print(f"Auth:   {auth_mode}")
     print()
 
     init_agent()
