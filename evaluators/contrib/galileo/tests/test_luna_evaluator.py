@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -261,7 +262,11 @@ class TestGalileoLunaClient:
     async def test_client_applies_ca_bundle_and_connection_limits(self) -> None:
         import certifi
         from agent_control_evaluator_galileo.luna import GalileoLunaClient
-        from agent_control_evaluator_galileo.luna.client import DEFAULT_KEEPALIVE_EXPIRY_SECS
+        from agent_control_evaluator_galileo.luna.client import (
+            DEFAULT_KEEPALIVE_EXPIRY_SECS,
+            DEFAULT_MAX_CONNECTIONS,
+            DEFAULT_MAX_KEEPALIVE_CONNECTIONS,
+        )
 
         captured: dict[str, object] = {}
         real_async_client = httpx.AsyncClient
@@ -290,6 +295,227 @@ class TestGalileoLunaClient:
         limits = captured["limits"]
         assert isinstance(limits, httpx.Limits)
         assert limits.keepalive_expiry == DEFAULT_KEEPALIVE_EXPIRY_SECS
+        assert limits.max_connections == DEFAULT_MAX_CONNECTIONS
+        assert limits.max_keepalive_connections == DEFAULT_MAX_KEEPALIVE_CONNECTIONS
+
+    @pytest.mark.asyncio
+    async def test_client_applies_connection_tuning_env(self) -> None:
+        from agent_control_evaluator_galileo.luna import GalileoLunaClient
+
+        captured: dict[str, object] = {}
+        real_async_client = httpx.AsyncClient
+
+        def recording_client(**kwargs: object) -> httpx.AsyncClient:
+            captured.update(kwargs)
+            return real_async_client(**kwargs)
+
+        with patch.dict(
+            os.environ,
+            {
+                "GALILEO_API_SECRET_KEY": "test-secret",
+                "GALILEO_LUNA_KEEPALIVE_EXPIRY_SECONDS": "0.25",
+                "GALILEO_LUNA_MAX_CONNECTIONS": "17",
+                "GALILEO_LUNA_MAX_KEEPALIVE_CONNECTIONS": "4",
+            },
+            clear=True,
+        ):
+            client = GalileoLunaClient(console_url="https://console.example.com")
+
+        with patch(
+            "agent_control_evaluator_galileo.luna.client.httpx.AsyncClient", recording_client
+        ):
+            try:
+                await client._get_client()
+            finally:
+                await client.close()
+
+        assert client.keepalive_expiry_seconds == 0.25
+        assert client.max_connections == 17
+        assert client.max_keepalive_connections == 4
+        limits = captured["limits"]
+        assert isinstance(limits, httpx.Limits)
+        assert limits.keepalive_expiry == 0.25
+        assert limits.max_connections == 17
+        assert limits.max_keepalive_connections == 4
+
+    def test_client_ignores_empty_connection_tuning_env(self) -> None:
+        from agent_control_evaluator_galileo.luna import GalileoLunaClient
+        from agent_control_evaluator_galileo.luna.client import (
+            DEFAULT_CLIENT_POOL_SIZE,
+            DEFAULT_KEEPALIVE_EXPIRY_SECS,
+            DEFAULT_MAX_CONNECTIONS,
+            DEFAULT_MAX_KEEPALIVE_CONNECTIONS,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "GALILEO_API_SECRET_KEY": "test-secret",
+                "GALILEO_LUNA_KEEPALIVE_EXPIRY_SECONDS": "",
+                "GALILEO_LUNA_MAX_CONNECTIONS": " ",
+                "GALILEO_LUNA_MAX_KEEPALIVE_CONNECTIONS": "",
+                "GALILEO_LUNA_CLIENT_POOL_SIZE": " ",
+            },
+            clear=True,
+        ):
+            client = GalileoLunaClient(console_url="https://console.example.com")
+
+        assert client.keepalive_expiry_seconds == DEFAULT_KEEPALIVE_EXPIRY_SECS
+        assert client.max_connections == DEFAULT_MAX_CONNECTIONS
+        assert client.max_keepalive_connections == DEFAULT_MAX_KEEPALIVE_CONNECTIONS
+        assert client.client_pool_size == DEFAULT_CLIENT_POOL_SIZE
+
+    @pytest.mark.asyncio
+    async def test_client_pool_size_rotates_across_http_clients(self) -> None:
+        import agent_control_evaluator_galileo.luna.client as luna_client_module
+        from agent_control_evaluator_galileo.luna import GalileoLunaClient
+
+        class FakeAsyncClient:
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+                self.is_closed = False
+
+            async def aclose(self) -> None:
+                self.is_closed = True
+
+        created: list[FakeAsyncClient] = []
+
+        def recording_client(**kwargs: object) -> FakeAsyncClient:
+            client = FakeAsyncClient(**kwargs)
+            created.append(client)
+            return client
+
+        with patch.dict(
+            os.environ,
+            {
+                "GALILEO_API_SECRET_KEY": "test-secret",
+                "GALILEO_LUNA_CLIENT_POOL_SIZE": "3",
+            },
+            clear=True,
+        ):
+            client = GalileoLunaClient(console_url="https://console.example.com")
+
+        with patch.object(luna_client_module.httpx, "AsyncClient", recording_client):
+            try:
+                selected = [await client._get_client() for _ in range(5)]
+            finally:
+                await client.close()
+
+        assert client.client_pool_size == 3
+        assert len(created) == 3
+        assert selected == [created[0], created[1], created[2], created[0], created[1]]
+        assert all(created_client.is_closed for created_client in created)
+
+    @pytest.mark.asyncio
+    async def test_pooled_client_selection_waits_for_client_lock(self) -> None:
+        from agent_control_evaluator_galileo.luna import GalileoLunaClient
+
+        class FakeAsyncClient:
+            is_closed = False
+
+            async def aclose(self) -> None:
+                self.is_closed = True
+
+        with patch.dict(
+            os.environ,
+            {
+                "GALILEO_API_SECRET_KEY": "test-secret",
+                "GALILEO_LUNA_CLIENT_POOL_SIZE": "2",
+            },
+            clear=True,
+        ):
+            client = GalileoLunaClient(console_url="https://console.example.com")
+
+        first_client = FakeAsyncClient()
+        second_client = FakeAsyncClient()
+        client._clients = [first_client, second_client]  # type: ignore[list-item]
+
+        await client._client_lock.acquire()
+        try:
+            pending_selection = asyncio.create_task(client._get_client())
+            await asyncio.sleep(0)
+
+            assert not pending_selection.done()
+        finally:
+            client._client_lock.release()
+
+        try:
+            assert await pending_selection is first_client
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_close_waits_for_client_lock_before_resetting_state(self) -> None:
+        from agent_control_evaluator_galileo.luna import GalileoLunaClient
+
+        class FakeAsyncClient:
+            is_closed = False
+
+            async def aclose(self) -> None:
+                self.is_closed = True
+
+        with patch.dict(os.environ, {"GALILEO_API_SECRET_KEY": "test-secret"}, clear=True):
+            client = GalileoLunaClient(console_url="https://console.example.com")
+
+        http_client = FakeAsyncClient()
+        client._client = http_client  # type: ignore[assignment]
+        client._clients = [http_client]  # type: ignore[list-item]
+
+        await client._client_lock.acquire()
+        try:
+            pending_close = asyncio.create_task(client.close())
+            await asyncio.sleep(0)
+
+            assert not pending_close.done()
+            assert client._client is http_client
+            assert not http_client.is_closed
+        finally:
+            client._client_lock.release()
+
+        await pending_close
+
+        assert client._client is None
+        assert client._clients == []
+        assert client._next_client_index == 0
+        assert http_client.is_closed
+
+    @pytest.mark.parametrize(
+        "env_values, expected",
+        [
+            ({"GALILEO_LUNA_KEEPALIVE_EXPIRY_SECONDS": "soon"}, "not a number"),
+            ({"GALILEO_LUNA_MAX_CONNECTIONS": "many"}, "not an integer"),
+            ({"GALILEO_LUNA_MAX_KEEPALIVE_CONNECTIONS": "some"}, "not an integer"),
+            (
+                {"GALILEO_LUNA_KEEPALIVE_EXPIRY_SECONDS": "-0.1"},
+                "greater than or equal to 0",
+            ),
+            ({"GALILEO_LUNA_MAX_CONNECTIONS": "0"}, "greater than 0"),
+            (
+                {"GALILEO_LUNA_MAX_KEEPALIVE_CONNECTIONS": "-1"},
+                "greater than or equal to 0",
+            ),
+            (
+                {
+                    "GALILEO_LUNA_MAX_CONNECTIONS": "2",
+                    "GALILEO_LUNA_MAX_KEEPALIVE_CONNECTIONS": "3",
+                },
+                "less than or equal",
+            ),
+            ({"GALILEO_LUNA_CLIENT_POOL_SIZE": "many"}, "not an integer"),
+            ({"GALILEO_LUNA_CLIENT_POOL_SIZE": "0"}, "greater than 0"),
+        ],
+    )
+    def test_client_reports_invalid_connection_tuning_env(
+        self, env_values: dict[str, str], expected: str
+    ) -> None:
+        from agent_control_evaluator_galileo.luna import GalileoLunaClient
+
+        env = {"GALILEO_API_SECRET_KEY": "test-secret"} | env_values
+        with patch.dict(os.environ, env, clear=True):
+            with pytest.raises(ValueError) as exc_info:
+                GalileoLunaClient(console_url="https://console.example.com")
+
+        assert expected in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_client_posts_to_scorers_invoke_without_protect_fields(self) -> None:
@@ -604,3 +830,41 @@ class TestLunaEvaluator:
         assert "error" not in result.metadata
         assert result.metadata["error_type"] == "RuntimeError"
         assert "fallback_action" not in result.metadata
+
+    @patch.dict(os.environ, {"GALILEO_API_KEY": "test-key"})
+    @pytest.mark.asyncio
+    async def test_evaluator_error_metadata_includes_http_status_context(self) -> None:
+        from agent_control_evaluator_galileo.luna import LunaEvaluator
+        from agent_control_evaluator_galileo.luna.client import GalileoLunaClient
+
+        evaluator = LunaEvaluator.from_dict({"scorer_label": "toxicity", "threshold": 0.5})
+        request = httpx.Request(
+            "POST",
+            "https://api.example.test/internal/scorers/invoke?token=secret",
+        )
+        response = httpx.Response(
+            503,
+            headers={"content-type": "application/json"},
+            text='{"detail":"busy"}',
+            request=request,
+        )
+
+        with patch.object(GalileoLunaClient, "invoke", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.side_effect = httpx.HTTPStatusError(
+                "service unavailable",
+                request=request,
+                response=response,
+            )
+
+            result = await evaluator.evaluate("hello")
+
+        assert result.matched is False
+        assert result.metadata is not None
+        assert result.metadata["error_type"] == "HTTPStatusError"
+        assert result.metadata["http_status_code"] == 503
+        assert result.metadata["http_method"] == "POST"
+        assert result.metadata["http_endpoint_path"] == "/internal/scorers/invoke"
+        assert result.metadata["http_response_content_type"] == "application/json"
+        assert result.metadata["http_response_body"] == '{"detail":"busy"}'
+        assert result.metadata["http_response_body_truncated"] is False
+        assert "token=secret" not in str(result.metadata)
