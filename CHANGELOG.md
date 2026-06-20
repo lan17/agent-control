@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v8.1.2 (2026-06-20)
+
+### Chores
+
+- **ci**: Trigger 8.1.2 release ([#244](https://github.com/agentcontrol/agent-control/pull/244),
+  [`e40c8e2`](https://github.com/agentcontrol/agent-control/commit/e40c8e24b96e5dfb4e582863ad2b28c9bf53c134))
+
+
 ## v8.1.1 (2026-06-20)
 
 ### Bug Fixes
