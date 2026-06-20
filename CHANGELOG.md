@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v8.1.1 (2026-06-20)
+
+### Bug Fixes
+
+- **evaluators**: Use SQLGlot native extra without direct sqlglotc pin
+  ([#243](https://github.com/agentcontrol/agent-control/pull/243),
+  [`6884ce9`](https://github.com/agentcontrol/agent-control/commit/6884ce9c16f85763f029ffba99867993548fc2ae))
+
+### Chores
+
+- **release**: Ts sdk v3.1.0 [skip ci]
+  ([`6df65f4`](https://github.com/agentcontrol/agent-control/commit/6df65f4385f17b24709e7e2ee3510b5f1042a356))
+
+
 ## v8.1.0 (2026-06-17)
 
 ### Bug Fixes
