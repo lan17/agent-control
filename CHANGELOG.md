@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v8.2.0 (2026-06-25)
+
+### Features
+
+- **evaluators**: New api from runners-api
+  ([#242](https://github.com/agentcontrol/agent-control/pull/242),
+  [`b38bf08`](https://github.com/agentcontrol/agent-control/commit/b38bf08e343ae11cee37ccc543deb05dcd862eaf))
+
+
 ## v8.1.2 (2026-06-20)
 
 ### Chores
