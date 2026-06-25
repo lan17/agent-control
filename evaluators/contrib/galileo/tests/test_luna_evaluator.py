@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
 from base64 import urlsafe_b64decode
 from unittest.mock import AsyncMock, patch
@@ -13,6 +12,11 @@ import httpx
 import pytest
 from agent_control_models import EvaluatorResult
 from pydantic import ValidationError
+
+LUNA_ENV = {
+    "GALILEO_API_SECRET_KEY": "test-secret",
+    "GALILEO_LUNA_INVOKE_URL": "http://luna-invoke:8090",
+}
 
 
 def _decode_jwt_payload(token: str) -> dict[str, object]:
@@ -24,23 +28,21 @@ def _decode_jwt_payload(token: str) -> dict[str, object]:
 class TestLunaEvaluatorConfig:
     """Tests for direct Luna evaluator configuration."""
 
-    def test_config_accepts_direct_scorer_fields(self) -> None:
+    def test_config_accepts_scorer_id_with_all_optional_fields(self) -> None:
         from agent_control_evaluator_galileo.luna import LunaEvaluatorConfig
 
-        # Given: a direct scorer config with local thresholding
         config = LunaEvaluatorConfig(
-            scorer_label="toxicity",
             scorer_id="scorer-123",
             scorer_version_id="version-123",
+            scorer_label="toxicity",
             threshold=0.7,
             operator="gte",
             config={"temperature": 0},
         )
 
-        # Then: config is retained without Protect concepts
-        assert config.scorer_label == "toxicity"
         assert config.scorer_id == "scorer-123"
         assert config.scorer_version_id == "version-123"
+        assert config.scorer_label == "toxicity"
         assert config.threshold == 0.7
         assert config.operator == "gte"
         assert config.scorer_config == {"temperature": 0}
@@ -54,40 +56,58 @@ class TestLunaEvaluatorConfig:
         assert config.scorer_id == "scorer-123"
         assert config.scorer_label is None
 
-    def test_config_requires_a_scorer_identifier(self) -> None:
+    def test_config_requires_scorer_id(self) -> None:
         from agent_control_evaluator_galileo.luna import LunaEvaluatorConfig
 
-        with pytest.raises(ValidationError, match="one of scorer_label"):
+        with pytest.raises(ValidationError, match="scorer_id"):
             LunaEvaluatorConfig(threshold=0.5)
+
+    def test_config_rejects_label_only(self) -> None:
+        from agent_control_evaluator_galileo.luna import LunaEvaluatorConfig
+
+        with pytest.raises(ValidationError, match="scorer_id"):
+            LunaEvaluatorConfig(scorer_label="toxicity", threshold=0.5)
+
+    def test_config_rejects_version_only(self) -> None:
+        from agent_control_evaluator_galileo.luna import LunaEvaluatorConfig
+
+        with pytest.raises(ValidationError, match="scorer_id"):
+            LunaEvaluatorConfig(scorer_version_id="version-123", threshold=0.5)
 
     def test_numeric_operator_requires_numeric_threshold(self) -> None:
         from agent_control_evaluator_galileo.luna import LunaEvaluatorConfig
 
-        # Given/When/Then: numeric local comparison rejects non-numeric thresholds
         with pytest.raises(ValidationError, match="numeric threshold"):
-            LunaEvaluatorConfig(scorer_label="toxicity", threshold="high", operator="gte")
+            LunaEvaluatorConfig(scorer_id="scorer-123", threshold="high", operator="gte")
 
 
 class TestGalileoLunaClient:
     """Tests for the GalileoLunaClient HTTP contract."""
 
-    def test_scorer_invoke_request_matches_api_schema_shape(self) -> None:
+    def test_scorer_invoke_request_requires_scorer_id(self) -> None:
         from agent_control_evaluator_galileo.luna import ScorerInvokeInputs, ScorerInvokeRequest
 
-        # Given: a scorer request with scorer config
+        with pytest.raises(ValidationError, match="scorer_id"):
+            ScorerInvokeRequest(
+                scorer_label="toxicity",
+                inputs=ScorerInvokeInputs(query="hello"),
+            )
+
+    def test_scorer_invoke_request_shape_with_all_fields(self) -> None:
+        from agent_control_evaluator_galileo.luna import ScorerInvokeInputs, ScorerInvokeRequest
+
         request = ScorerInvokeRequest(
-            scorer_label="toxicity",
             scorer_id="scorer-123",
             scorer_version_id="version-123",
+            scorer_label="toxicity",
             inputs=ScorerInvokeInputs(query={"messages": [{"role": "user", "content": "hello"}]}),
             config={"top_k": 1},
         )
 
-        # Then: the serialized payload uses the API-owned scorer invoke fields
         assert request.to_dict() == {
-            "scorer_label": "toxicity",
             "scorer_id": "scorer-123",
             "scorer_version_id": "version-123",
+            "scorer_label": "toxicity",
             "inputs": {
                 "query": {"messages": [{"role": "user", "content": "hello"}]},
                 "response": "",
@@ -95,23 +115,35 @@ class TestGalileoLunaClient:
             "config": {"top_k": 1},
         }
 
+    def test_scorer_invoke_request_omits_optional_fields_when_absent(self) -> None:
+        from agent_control_evaluator_galileo.luna import ScorerInvokeInputs, ScorerInvokeRequest
+
+        request = ScorerInvokeRequest(
+            scorer_id="scorer-123",
+            inputs=ScorerInvokeInputs(query="hello"),
+        )
+
+        body = request.to_dict()
+        assert body["scorer_id"] == "scorer-123"
+        assert "scorer_version_id" not in body
+        assert "scorer_label" not in body
+        assert body["config"] == {}
+
     @pytest.mark.parametrize("empty_value", ["", " ", {}, []])
     def test_scorer_invoke_request_requires_input_or_output(self, empty_value: object) -> None:
         from agent_control_evaluator_galileo.luna import ScorerInvokeRequest
 
-        # Given/When/Then: the request mirrors API validation
         with pytest.raises(
             ValidationError, match="Either inputs.query or inputs.response must be set"
         ):
             ScorerInvokeRequest(
-                scorer_label="toxicity",
+                scorer_id="scorer-123",
                 inputs={"query": empty_value, "response": empty_value},
             )
 
-    def test_scorer_invoke_response_matches_api_schema_shape(self) -> None:
+    def test_scorer_invoke_response_shape(self) -> None:
         from agent_control_evaluator_galileo.luna import ScorerInvokeResponse
 
-        # Given: an API scorer invoke response
         response = ScorerInvokeResponse.from_dict(
             {
                 "scorer_label": "toxicity",
@@ -122,7 +154,6 @@ class TestGalileoLunaClient:
             }
         )
 
-        # Then: the model exposes the API response fields
         assert response.model_dump() == {
             "scorer_label": "toxicity",
             "score": 0.82,
@@ -130,137 +161,48 @@ class TestGalileoLunaClient:
             "execution_time": 0.12,
             "error_message": None,
         }
-        assert response.scorer_label == "toxicity"
         assert response.raw_response["scorer_label"] == "toxicity"
 
-    def test_client_uses_protect_api_url_derivation(self) -> None:
+    def test_client_normalizes_luna_invoke_service_root(self) -> None:
         from agent_control_evaluator_galileo.luna import GalileoLunaClient
 
-        # Given: the same console URL shape used by Protect
-        with patch.dict(os.environ, {"GALILEO_API_KEY": "test-key"}, clear=True):
-            client = GalileoLunaClient(console_url="https://console.demo-v2.galileocloud.io")
-
-        # Then: the API URL is derived the same way
-        assert client.api_base == "https://api.demo-v2.galileocloud.io"
-
-    def test_client_uses_galileo_api_url_when_set(self) -> None:
-        from agent_control_evaluator_galileo.luna import GalileoLunaClient
-
-        # Given: an explicit custom-environment API URL
         with patch.dict(
             os.environ,
-            {
-                "GALILEO_API_KEY": "test-key",
-                "GALILEO_API_URL": "https://api-test-luna.example.com/",
-            },
+            LUNA_ENV | {"GALILEO_LUNA_INVOKE_URL": "  http://luna-invoke:8090/  "},
             clear=True,
         ):
-            client = GalileoLunaClient(console_url="https://console-test-luna.example.com")
+            client = GalileoLunaClient()
 
-        # Then: the explicit API URL wins over console URL derivation
-        assert client.api_base == "https://api-test-luna.example.com"
+        assert client.luna_invoke_url == "http://luna-invoke:8090/api/v1/scorers/invoke"
 
-    def test_client_uses_luna_api_url_when_set(self) -> None:
+    def test_client_uses_full_luna_invoke_url_as_configured(self) -> None:
         from agent_control_evaluator_galileo.luna import GalileoLunaClient
 
-        # Given: a Luna-specific API URL and a general API URL are both configured
         with patch.dict(
             os.environ,
-            {
-                "GALILEO_API_KEY": "test-key",
-                "GALILEO_LUNA_API_URL": "https://luna-api.example.com/",
-                "GALILEO_API_URL": "https://api.example.com",
-            },
+            LUNA_ENV
+            | {"GALILEO_LUNA_INVOKE_URL": "  http://luna-invoke:8090/luna/scorers/invoke/  "},
             clear=True,
         ):
-            client = GalileoLunaClient(console_url="https://console.example.com")
+            client = GalileoLunaClient()
 
-        # Then: the Luna-specific URL wins without changing the general API URL contract
-        assert client.api_base == "https://luna-api.example.com"
+        assert client.luna_invoke_url == "http://luna-invoke:8090/luna/scorers/invoke"
 
-    def test_client_uses_luna_api_url_for_internal_auth(self) -> None:
+    def test_client_rejects_unreadable_luna_invoke_ca_bundle(self) -> None:
         from agent_control_evaluator_galileo.luna import GalileoLunaClient
 
-        # Given: internal auth and both Luna-specific and general API URLs are configured
         with patch.dict(
             os.environ,
-            {
-                "GALILEO_API_SECRET_KEY": "test-secret",
-                "GALILEO_LUNA_API_URL": "https://internal-api.example.com",
-                "GALILEO_API_URL": "https://api-public.example.com",
-            },
+            LUNA_ENV | {"GALILEO_LUNA_INVOKE_CA_FILE": "/nonexistent/ca.pem"},
             clear=True,
         ):
-            client = GalileoLunaClient(console_url="https://console.example.com")
-
-        # Then: internal scorer invocation uses the Luna-specific API base
-        assert client.api_base == "https://internal-api.example.com"
-
-    def test_client_derives_api_url_from_console_dash_hostname(self) -> None:
-        from agent_control_evaluator_galileo.luna import GalileoLunaClient
-
-        # Given: a console-<environment> hostname
-        with patch.dict(os.environ, {"GALILEO_API_KEY": "test-key"}, clear=True):
-            client = GalileoLunaClient(console_url="https://console-test-luna.example.com")
-
-        # Then: the matching api-<environment> hostname is used
-        assert client.api_base == "https://api-test-luna.example.com"
-
-    def test_client_strips_whitespace_from_env_url(self) -> None:
-        from agent_control_evaluator_galileo.luna import GalileoLunaClient
-
-        # Given: a URL override padded with whitespace and a trailing slash
-        with patch.dict(
-            os.environ,
-            {
-                "GALILEO_API_KEY": "test-key",
-                "GALILEO_LUNA_API_URL": "  https://luna-api.example.com/  ",
-            },
-            clear=True,
-        ):
-            client = GalileoLunaClient(console_url="https://console.example.com")
-
-        # Then: the resolved base URL is trimmed and slash-free
-        assert client.api_base == "https://luna-api.example.com"
-
-    def test_client_warns_when_deprecated_auth_mode_env_is_set(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        from agent_control_evaluator_galileo.luna import GalileoLunaClient
-
-        # Given: the deprecated auth-mode environment variable
-        caplog.set_level(logging.WARNING)
-        with patch.dict(
-            os.environ,
-            {"GALILEO_API_KEY": "test-key", "GALILEO_LUNA_AUTH_MODE": "public"},
-            clear=True,
-        ):
-            # When/Then: construction still works but emits a deprecation warning
-            with pytest.warns(DeprecationWarning, match="GALILEO_LUNA_AUTH_MODE is deprecated"):
-                client = GalileoLunaClient(console_url="https://console.example.com")
-
-        assert client.auth_mode == "public"
-        assert "GALILEO_LUNA_AUTH_MODE is deprecated" in caplog.text
-
-    def test_client_rejects_unreadable_ca_bundle(self) -> None:
-        from agent_control_evaluator_galileo.luna import GalileoLunaClient
-
-        # Given: a CA bundle path that does not exist
-        with patch.dict(
-            os.environ,
-            {
-                "GALILEO_API_SECRET_KEY": "test-secret",
-                "GALILEO_LUNA_CA_FILE": "/nonexistent/ca.pem",
-            },
-            clear=True,
-        ):
-            # When/Then: client construction fails fast instead of at first request
             with pytest.raises(ValueError, match="Failed to load CA bundle"):
-                GalileoLunaClient(console_url="https://console.example.com")
+                GalileoLunaClient()
 
     @pytest.mark.asyncio
     async def test_client_applies_ca_bundle_and_connection_limits(self) -> None:
-        import certifi
+        import ssl
+
         from agent_control_evaluator_galileo.luna import GalileoLunaClient
         from agent_control_evaluator_galileo.luna.client import (
             DEFAULT_KEEPALIVE_EXPIRY_SECS,
@@ -275,11 +217,12 @@ class TestGalileoLunaClient:
             captured.update(kwargs)
             return real_async_client(**kwargs)
 
-        # Given: internal auth with a CA bundle configured
-        with patch.dict(os.environ, {"GALILEO_API_SECRET_KEY": "test-secret"}, clear=True):
-            client = GalileoLunaClient(
-                console_url="https://console.example.com", ca_file=certifi.where()
-            )
+        ssl_context = ssl.create_default_context()
+        with (
+            patch.dict(os.environ, LUNA_ENV, clear=True),
+            patch.object(GalileoLunaClient, "_load_ssl_context", return_value=ssl_context),
+        ):
+            client = GalileoLunaClient(luna_invoke_ca_file="/etc/luna-invoke-ca.pem")
 
         with patch(
             "agent_control_evaluator_galileo.luna.client.httpx.AsyncClient", recording_client
@@ -289,8 +232,6 @@ class TestGalileoLunaClient:
             finally:
                 await client.close()
 
-        # Then: TLS verification uses the configured CA bundle and pooled
-        # connections expire quickly so closed server sockets are not reused
         assert captured["verify"] is client._ssl_context
         limits = captured["limits"]
         assert isinstance(limits, httpx.Limits)
@@ -313,13 +254,14 @@ class TestGalileoLunaClient:
             os.environ,
             {
                 "GALILEO_API_SECRET_KEY": "test-secret",
+                "GALILEO_LUNA_INVOKE_URL": "http://luna-invoke:8090",
                 "GALILEO_LUNA_KEEPALIVE_EXPIRY_SECONDS": "0.25",
                 "GALILEO_LUNA_MAX_CONNECTIONS": "17",
                 "GALILEO_LUNA_MAX_KEEPALIVE_CONNECTIONS": "4",
             },
             clear=True,
         ):
-            client = GalileoLunaClient(console_url="https://console.example.com")
+            client = GalileoLunaClient()
 
         with patch(
             "agent_control_evaluator_galileo.luna.client.httpx.AsyncClient", recording_client
@@ -351,6 +293,7 @@ class TestGalileoLunaClient:
             os.environ,
             {
                 "GALILEO_API_SECRET_KEY": "test-secret",
+                "GALILEO_LUNA_INVOKE_URL": "http://luna-invoke:8090",
                 "GALILEO_LUNA_KEEPALIVE_EXPIRY_SECONDS": "",
                 "GALILEO_LUNA_MAX_CONNECTIONS": " ",
                 "GALILEO_LUNA_MAX_KEEPALIVE_CONNECTIONS": "",
@@ -358,7 +301,7 @@ class TestGalileoLunaClient:
             },
             clear=True,
         ):
-            client = GalileoLunaClient(console_url="https://console.example.com")
+            client = GalileoLunaClient()
 
         assert client.keepalive_expiry_seconds == DEFAULT_KEEPALIVE_EXPIRY_SECS
         assert client.max_connections == DEFAULT_MAX_CONNECTIONS
@@ -389,11 +332,12 @@ class TestGalileoLunaClient:
             os.environ,
             {
                 "GALILEO_API_SECRET_KEY": "test-secret",
+                "GALILEO_LUNA_INVOKE_URL": "http://luna-invoke:8090",
                 "GALILEO_LUNA_CLIENT_POOL_SIZE": "3",
             },
             clear=True,
         ):
-            client = GalileoLunaClient(console_url="https://console.example.com")
+            client = GalileoLunaClient()
 
         with patch.object(luna_client_module.httpx, "AsyncClient", recording_client):
             try:
@@ -420,11 +364,12 @@ class TestGalileoLunaClient:
             os.environ,
             {
                 "GALILEO_API_SECRET_KEY": "test-secret",
+                "GALILEO_LUNA_INVOKE_URL": "http://luna-invoke:8090",
                 "GALILEO_LUNA_CLIENT_POOL_SIZE": "2",
             },
             clear=True,
         ):
-            client = GalileoLunaClient(console_url="https://console.example.com")
+            client = GalileoLunaClient()
 
         first_client = FakeAsyncClient()
         second_client = FakeAsyncClient()
@@ -454,8 +399,8 @@ class TestGalileoLunaClient:
             async def aclose(self) -> None:
                 self.is_closed = True
 
-        with patch.dict(os.environ, {"GALILEO_API_SECRET_KEY": "test-secret"}, clear=True):
-            client = GalileoLunaClient(console_url="https://console.example.com")
+        with patch.dict(os.environ, LUNA_ENV, clear=True):
+            client = GalileoLunaClient()
 
         http_client = FakeAsyncClient()
         client._client = http_client  # type: ignore[assignment]
@@ -510,15 +455,15 @@ class TestGalileoLunaClient:
     ) -> None:
         from agent_control_evaluator_galileo.luna import GalileoLunaClient
 
-        env = {"GALILEO_API_SECRET_KEY": "test-secret"} | env_values
+        env = LUNA_ENV | env_values
         with patch.dict(os.environ, env, clear=True):
             with pytest.raises(ValueError) as exc_info:
-                GalileoLunaClient(console_url="https://console.example.com")
+                GalileoLunaClient()
 
         assert expected in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_client_posts_to_scorers_invoke_without_protect_fields(self) -> None:
+    async def test_client_posts_to_luna_invoke_scorer_invoke(self) -> None:
         from agent_control_evaluator_galileo.luna import GalileoLunaClient
 
         captured: dict[str, object] = {}
@@ -537,21 +482,14 @@ class TestGalileoLunaClient:
                 },
             )
 
-        # Given: a Luna client with a mock HTTP transport
-        with patch.dict(os.environ, {"GALILEO_API_KEY": "test-key"}, clear=True):
-            client = GalileoLunaClient(console_url="https://console.demo-v2.galileocloud.io")
-        client._client = httpx.AsyncClient(
-            transport=httpx.MockTransport(handler),
-            headers={
-                "Galileo-API-Key": client.api_key,
-                "Content-Type": "application/json",
-            },
-        )
+        # Given: a Luna client pointing at luna invoke endpoint
+        with patch.dict(os.environ, LUNA_ENV, clear=True):
+            client = GalileoLunaClient()
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
         try:
-            # When: invoking a scorer
             response = await client.invoke(
-                scorer_label="toxicity",
+                scorer_id="scorer-123",
                 input="user prompt",
                 output="model answer",
                 config={"top_k": 1},
@@ -559,59 +497,13 @@ class TestGalileoLunaClient:
         finally:
             await client.close()
 
-        # Then: the direct scorer endpoint and body are used
+        # Then: posts to luna invoke endpoint /api/v1/scorers/invoke with JWT, no Galileo-API-Key
         assert response.score == 0.82
-        assert captured["url"] == "https://api.demo-v2.galileocloud.io/scorers/invoke"
+        assert captured["url"] == "http://luna-invoke:8090/api/v1/scorers/invoke"
         assert captured["body"] == {
-            "scorer_label": "toxicity",
+            "scorer_id": "scorer-123",
             "inputs": {"query": "user prompt", "response": "model answer"},
             "config": {"top_k": 1},
-        }
-        assert "stage_name" not in captured["body"]
-        assert "prioritized_rulesets" not in captured["body"]
-        headers = captured["headers"]
-        assert isinstance(headers, dict)
-        assert headers["galileo-api-key"] == "test-key"
-
-    @pytest.mark.asyncio
-    async def test_client_uses_internal_jwt_when_api_secret_is_set(self) -> None:
-        from agent_control_evaluator_galileo.luna import GalileoLunaClient
-
-        captured: dict[str, object] = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            captured["url"] = str(request.url)
-            captured["headers"] = dict(request.headers)
-            captured["body"] = json.loads(request.content.decode())
-            return httpx.Response(
-                200,
-                json={
-                    "scorer_label": "toxicity",
-                    "score": 0.82,
-                    "status": "success",
-                    "execution_time": 0.12,
-                },
-            )
-
-        # Given: a Luna client configured with the Galileo API internal secret
-        with patch.dict(os.environ, {"GALILEO_API_SECRET_KEY": "test-secret"}, clear=True):
-            client = GalileoLunaClient(api_url="https://api.default.svc.cluster.local:8088")
-        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-
-        try:
-            # When: invoking a scorer with internal JWT auth
-            response = await client.invoke(scorer_label="toxicity", output="model answer")
-        finally:
-            await client.close()
-
-        # Then: the internal scorer endpoint is called with an internal JWT
-        assert response.score == 0.82
-        assert (
-            captured["url"] == "https://api.default.svc.cluster.local:8088/internal/scorers/invoke"
-        )
-        assert captured["body"] == {
-            "scorer_label": "toxicity",
-            "inputs": {"query": "", "response": "model answer"},
         }
         headers = captured["headers"]
         assert isinstance(headers, dict)
@@ -619,43 +511,58 @@ class TestGalileoLunaClient:
         auth_header = headers["authorization"]
         assert isinstance(auth_header, str)
         assert auth_header.startswith("Bearer ")
-        token_payload = _decode_jwt_payload(auth_header.removeprefix("Bearer "))
-        assert token_payload["internal"] is True
-        assert token_payload["scope"] == "scorers.invoke"
+        payload = _decode_jwt_payload(auth_header.removeprefix("Bearer "))
+        assert payload["internal"] is True
+        assert payload["scope"] == "scorers.invoke"
 
     @pytest.mark.asyncio
-    async def test_client_uses_internal_jwt_without_api_key(self) -> None:
+    async def test_client_forwards_scorer_version_id_when_configured(self) -> None:
         from agent_control_evaluator_galileo.luna import GalileoLunaClient
 
-        # Given: a Luna client configured with internal JWT auth
-        with patch.dict(os.environ, {"GALILEO_API_SECRET_KEY": "test-secret"}, clear=True):
-            client = GalileoLunaClient(api_url="https://api.default.svc.cluster.local:8088")
+        captured: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content.decode())
+            return httpx.Response(200, json={"score": 0.5, "status": "success"})
+
+        with patch.dict(os.environ, LUNA_ENV, clear=True):
+            client = GalileoLunaClient()
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        try:
+            await client.invoke(
+                scorer_id="scorer-123",
+                scorer_version_id="version-456",
+                input="hello",
+            )
+        finally:
+            await client.close()
+
+        assert captured["body"]["scorer_version_id"] == "version-456"
+
+    @pytest.mark.asyncio
+    async def test_client_omits_galileo_api_key_even_when_env_is_set(self) -> None:
+        from agent_control_evaluator_galileo.luna import GalileoLunaClient
 
         captured: dict[str, object] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["headers"] = dict(request.headers)
-            return httpx.Response(
-                200,
-                json={"scorer_label": "toxicity", "score": 0.82, "status": "success"},
-            )
+            return httpx.Response(200, json={"score": 0.5, "status": "success"})
 
+        env = {**LUNA_ENV, "GALILEO_API_KEY": "should-not-be-sent"}
+        with patch.dict(os.environ, env, clear=True):
+            client = GalileoLunaClient()
         client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
         try:
-            # When: invoking without project context
-            response = await client.invoke(scorer_label="toxicity", output="model answer")
+            await client.invoke(scorer_id="scorer-123", input="hello")
         finally:
             await client.close()
 
-        # Then: internal JWT auth still works
-        assert response.score == 0.82
         headers = captured["headers"]
         assert isinstance(headers, dict)
-        auth_header = headers["authorization"]
-        assert isinstance(auth_header, str)
-        token_payload = _decode_jwt_payload(auth_header.removeprefix("Bearer "))
-        assert token_payload["internal"] is True
-        assert token_payload["scope"] == "scorers.invoke"
+        assert "galileo-api-key" not in headers
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("empty_value", ["", " ", {}, []])
@@ -664,19 +571,17 @@ class TestGalileoLunaClient:
     ) -> None:
         from agent_control_evaluator_galileo.luna import GalileoLunaClient
 
-        # Given: a Luna client and scorer input values that API treats as missing
-        with patch.dict(os.environ, {"GALILEO_API_KEY": "test-key"}, clear=True):
-            client = GalileoLunaClient(api_url="https://api.default.svc.cluster.local:8088")
+        with patch.dict(os.environ, LUNA_ENV, clear=True):
+            client = GalileoLunaClient()
 
-        # When/Then: the client rejects the request before calling API
         with pytest.raises(ValueError, match="At least one of input or output must be provided"):
-            await client.invoke(scorer_label="toxicity", input=empty_value, output=empty_value)
+            await client.invoke(scorer_id="scorer-123", input=empty_value, output=empty_value)
 
 
 class TestLunaEvaluator:
     """Tests for direct Luna evaluator behavior."""
 
-    @patch.dict(os.environ, {"GALILEO_API_KEY": "test-key"})
+    @patch.dict(os.environ, LUNA_ENV)
     def test_evaluator_metadata(self) -> None:
         from agent_control_evaluator_galileo.luna import LunaEvaluator
 
@@ -687,31 +592,26 @@ class TestLunaEvaluator:
     def test_evaluator_init_without_auth_raises(self) -> None:
         from agent_control_evaluator_galileo.luna import LunaEvaluator
 
-        with pytest.raises(ValueError, match="GALILEO_API_SECRET_KEY or GALILEO_API_KEY"):
-            LunaEvaluator.from_dict({"scorer_label": "toxicity", "threshold": 0.5})
+        with pytest.raises(ValueError, match="GALILEO_API_SECRET_KEY or GALILEO_API_SECRET"):
+            LunaEvaluator.from_dict({"scorer_id": "scorer-123", "threshold": 0.5})
 
-    @patch.dict(os.environ, {"GALILEO_API_SECRET_KEY": "test-secret"}, clear=True)
+    @patch.dict(os.environ, LUNA_ENV, clear=True)
     def test_evaluator_init_accepts_api_secret(self) -> None:
         from agent_control_evaluator_galileo.luna import LunaEvaluator
 
-        evaluator = LunaEvaluator.from_dict(
-            {
-                "scorer_label": "toxicity",
-                "threshold": 0.5,
-            }
-        )
+        evaluator = LunaEvaluator.from_dict({"scorer_id": "scorer-123", "threshold": 0.5})
 
-        assert evaluator.config.scorer_label == "toxicity"
+        assert evaluator.config.scorer_id == "scorer-123"
 
-    @patch.dict(os.environ, {"GALILEO_API_KEY": "test-key"})
+    @patch.dict(os.environ, LUNA_ENV)
     @pytest.mark.asyncio
     async def test_evaluator_applies_threshold_locally_to_raw_score(self) -> None:
         from agent_control_evaluator_galileo.luna import LunaEvaluator, ScorerInvokeResponse
         from agent_control_evaluator_galileo.luna.client import GalileoLunaClient
 
-        # Given: a direct Luna evaluator and a raw successful scorer response
         evaluator = LunaEvaluator.from_dict(
             {
+                "scorer_id": "scorer-123",
                 "scorer_label": "toxicity",
                 "threshold": 0.7,
                 "operator": "gte",
@@ -727,7 +627,6 @@ class TestLunaEvaluator:
                 execution_time=0.1,
             )
 
-            # When: evaluating a full step payload
             result = await evaluator.evaluate(
                 {
                     "input": "user prompt",
@@ -735,11 +634,11 @@ class TestLunaEvaluator:
                 }
             )
 
-        # Then: the raw score is thresholded locally and no Protect fields are sent
         assert isinstance(result, EvaluatorResult)
         assert result.matched is True
         assert result.confidence == 0.82
         assert result.metadata == {
+            "scorer_id": "scorer-123",
             "scorer_label": "toxicity",
             "score": 0.82,
             "threshold": 0.7,
@@ -749,6 +648,7 @@ class TestLunaEvaluator:
             "error_message": None,
         }
         mock_invoke.assert_awaited_once_with(
+            scorer_id="scorer-123",
             scorer_label="toxicity",
             input="user prompt",
             output="model answer",
@@ -756,15 +656,48 @@ class TestLunaEvaluator:
             timeout=5.0,
         )
 
-    @patch.dict(os.environ, {"GALILEO_API_KEY": "test-key"})
+    @patch.dict(os.environ, LUNA_ENV)
+    @pytest.mark.asyncio
+    async def test_evaluator_forwards_configured_scorer_version_id(self) -> None:
+        from agent_control_evaluator_galileo.luna import LunaEvaluator, ScorerInvokeResponse
+        from agent_control_evaluator_galileo.luna.client import GalileoLunaClient
+
+        evaluator = LunaEvaluator.from_dict(
+            {
+                "scorer_id": "scorer-123",
+                "scorer_version_id": "version-456",
+                "threshold": 0.5,
+                "operator": "gte",
+            }
+        )
+
+        with patch.object(GalileoLunaClient, "invoke", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = ScorerInvokeResponse(
+                score=0.82,
+                status="success",
+            )
+
+            result = await evaluator.evaluate("hello")
+
+        assert result.matched is True
+        assert result.metadata["scorer_version_id"] == "version-456"
+        mock_invoke.assert_awaited_once_with(
+            scorer_id="scorer-123",
+            scorer_version_id="version-456",
+            input="hello",
+            output=None,
+            config=None,
+            timeout=10.0,
+        )
+
+    @patch.dict(os.environ, LUNA_ENV)
     @pytest.mark.asyncio
     async def test_evaluator_returns_non_match_below_threshold(self) -> None:
         from agent_control_evaluator_galileo.luna import LunaEvaluator, ScorerInvokeResponse
         from agent_control_evaluator_galileo.luna.client import GalileoLunaClient
 
-        # Given: a raw scorer value below the local threshold
         evaluator = LunaEvaluator.from_dict(
-            {"scorer_label": "toxicity", "threshold": 0.7, "operator": "gte"}
+            {"scorer_id": "scorer-123", "threshold": 0.7, "operator": "gte"}
         )
 
         with patch.object(GalileoLunaClient, "invoke", new_callable=AsyncMock) as mock_invoke:
@@ -774,56 +707,48 @@ class TestLunaEvaluator:
                 status="success",
             )
 
-            # When: evaluating selected scalar data
             result = await evaluator.evaluate("hello")
 
-        # Then: the control does not match
         assert result.matched is False
         assert result.confidence == 0.2
         mock_invoke.assert_awaited_once_with(
-            scorer_label="toxicity",
+            scorer_id="scorer-123",
             input="hello",
             output=None,
             config=None,
             timeout=10.0,
         )
 
-    @patch.dict(os.environ, {"GALILEO_API_KEY": "test-key"})
+    @patch.dict(os.environ, LUNA_ENV)
     @pytest.mark.asyncio
     @pytest.mark.parametrize("data", ["", "   "])
     async def test_evaluator_does_not_call_api_for_empty_data(self, data: str) -> None:
         from agent_control_evaluator_galileo.luna import LunaEvaluator
         from agent_control_evaluator_galileo.luna.client import GalileoLunaClient
 
-        # Given: an evaluator and empty selected data
-        evaluator = LunaEvaluator.from_dict({"scorer_label": "toxicity", "threshold": 0.5})
+        evaluator = LunaEvaluator.from_dict({"scorer_id": "scorer-123", "threshold": 0.5})
 
         with patch.object(GalileoLunaClient, "invoke", new_callable=AsyncMock) as mock_invoke:
-            # When: evaluating empty data
             result = await evaluator.evaluate(data)
 
-        # Then: no remote scorer call is made
         assert result.matched is False
         assert result.confidence == 1.0
         assert result.message == "No data to score with Luna"
         mock_invoke.assert_not_called()
 
-    @patch.dict(os.environ, {"GALILEO_API_KEY": "test-key"})
+    @patch.dict(os.environ, LUNA_ENV)
     @pytest.mark.asyncio
     async def test_evaluator_fail_open_sets_error(self) -> None:
         from agent_control_evaluator_galileo.luna import LunaEvaluator
         from agent_control_evaluator_galileo.luna.client import GalileoLunaClient
 
-        # Given: fixed fail-open behavior for scorer errors
-        evaluator = LunaEvaluator.from_dict({"scorer_label": "toxicity", "threshold": 0.5})
+        evaluator = LunaEvaluator.from_dict({"scorer_id": "scorer-123", "threshold": 0.5})
 
         with patch.object(GalileoLunaClient, "invoke", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.side_effect = RuntimeError("service unavailable")
 
-            # When: the scorer call fails
             result = await evaluator.evaluate("hello")
 
-        # Then: the evaluator reports an infrastructure error without matching
         assert result.matched is False
         assert result.error == "service unavailable"
         assert result.metadata is not None
@@ -831,16 +756,18 @@ class TestLunaEvaluator:
         assert result.metadata["error_type"] == "RuntimeError"
         assert "fallback_action" not in result.metadata
 
-    @patch.dict(os.environ, {"GALILEO_API_KEY": "test-key"})
+    @patch.dict(os.environ, LUNA_ENV)
     @pytest.mark.asyncio
     async def test_evaluator_error_metadata_includes_http_status_context(self) -> None:
         from agent_control_evaluator_galileo.luna import LunaEvaluator
         from agent_control_evaluator_galileo.luna.client import GalileoLunaClient
 
-        evaluator = LunaEvaluator.from_dict({"scorer_label": "toxicity", "threshold": 0.5})
+        evaluator = LunaEvaluator.from_dict(
+            {"scorer_id": "scorer-123", "scorer_label": "toxicity", "threshold": 0.5}
+        )
         request = httpx.Request(
             "POST",
-            "https://api.example.test/internal/scorers/invoke?token=secret",
+            "http://luna-invoke:8090/api/v1/scorers/invoke?token=secret",
         )
         response = httpx.Response(
             503,
@@ -863,7 +790,7 @@ class TestLunaEvaluator:
         assert result.metadata["error_type"] == "HTTPStatusError"
         assert result.metadata["http_status_code"] == 503
         assert result.metadata["http_method"] == "POST"
-        assert result.metadata["http_endpoint_path"] == "/internal/scorers/invoke"
+        assert result.metadata["http_endpoint_path"] == "/api/v1/scorers/invoke"
         assert result.metadata["http_response_content_type"] == "application/json"
         assert result.metadata["http_response_body"] == '{"detail":"busy"}'
         assert result.metadata["http_response_body_truncated"] is False
